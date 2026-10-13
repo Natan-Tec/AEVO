@@ -23,6 +23,17 @@ jobs:
       - name: Set up Android SDK
         uses: android-actions/setup-android@v3
 
+      - name: Install NDK and CMake
+        run: |
+          yes | sdkmanager --licenses > /dev/null
+          sdkmanager "ndk;26.1.10909125" "cmake;3.22.1"
+
+      - name: Download TinySoundFont
+        run: |
+          mkdir -p app/src/main/cpp
+          curl -fsSL -o app/src/main/cpp/tsf.h \
+            https://raw.githubusercontent.com/schellingb/TinySoundFont/master/tsf.h
+
       - name: Set up Gradle
         uses: gradle/actions/setup-gradle@v4
         with:
