@@ -4,10 +4,11 @@
     <uses-feature android:name="android.software.midi" android:required="false" />
 
     <application
+        android:name=".AevoApp"
         android:allowBackup="true"
         android:label="AEVO"
         android:supportsRtl="true"
-        android:theme="@style/Theme.AppCompat.DayNight.NoActionBar">
+        android:theme="@style/Theme.AEVO">
 
         <activity
             android:name=".MainActivity"
@@ -17,6 +18,13 @@
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
         </activity>
+
+        <!-- Tela de erro: roda em outro processo para sobreviver ao fechamento do app. -->
+        <activity
+            android:name=".CrashActivity"
+            android:exported="false"
+            android:process=":crash"
+            android:theme="@android:style/Theme.Material.NoActionBar" />
 
     </application>
 
