@@ -12,12 +12,23 @@ android {
         applicationId = "com.natan.aevo"
         minSdk = 24
         targetSdk = 34
-        versionCode = 2
-        versionName = "0.2.0"
+        versionCode = 3
+        versionName = "0.3.0-beta"
 
         ndk {
             abiFilters += listOf("arm64-v8a", "armeabi-v7a", "x86_64")
         }
+
+        externalNativeBuild {
+            cmake {
+                // O Oboe (via Prefab) exige a STL compartilhada.
+                arguments += listOf("-DANDROID_STL=c++_shared")
+            }
+        }
+    }
+
+    buildFeatures {
+        prefab = true
     }
 
     externalNativeBuild {
@@ -47,4 +58,5 @@ dependencies {
     implementation("androidx.core:core-ktx:1.13.1")
     implementation("androidx.appcompat:appcompat:1.7.0")
     implementation("androidx.activity:activity-ktx:1.9.0")
+    implementation("com.google.oboe:oboe:1.9.3")
 }
