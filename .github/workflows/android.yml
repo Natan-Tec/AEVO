@@ -20,13 +20,12 @@ jobs:
           distribution: temurin
           java-version: '17'
 
-      - name: Set up Android SDK
-        uses: android-actions/setup-android@v3
-
+      # O runner ubuntu-24.04 já traz o Android SDK em $ANDROID_HOME.
       - name: Install NDK and CMake
         run: |
-          yes | sdkmanager --licenses > /dev/null
-          sdkmanager "ndk;26.1.10909125" "cmake;3.22.1"
+          SDKMANAGER="$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager"
+          yes | "$SDKMANAGER" --licenses > /dev/null || true
+          "$SDKMANAGER" "ndk;26.1.10909125" "cmake;3.22.1"
 
       - name: Download TinySoundFont
         run: |
