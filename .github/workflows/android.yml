@@ -27,12 +27,6 @@ jobs:
           yes | "$SDKMANAGER" --licenses > /dev/null || true
           "$SDKMANAGER" "ndk;26.1.10909125" "cmake;3.22.1"
 
-      - name: Download TinySoundFont
-        run: |
-          mkdir -p app/src/main/cpp
-          curl -fsSL -o app/src/main/cpp/tsf.h \
-            https://raw.githubusercontent.com/schellingb/TinySoundFont/master/tsf.h
-
       - name: Set up Gradle
         uses: gradle/actions/setup-gradle@v4
         with:

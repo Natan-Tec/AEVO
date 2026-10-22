@@ -10,7 +10,14 @@ object Engine {
     external fun nativeStopAudio()
     external fun nativeAudioInfo(): String
 
-    external fun nativeAddTrack(sf2: ByteArray): Int
+    /**
+     * Carrega um SF2 pelo descritor de arquivo (o motor fecha o fd), sem passar pela memória do Java.
+     * Retorna o id da faixa; -1 = SF2 inválido ou grande demais; -2 = fd sem leitura aleatória.
+     */
+    external fun nativeAddTrackFd(fd: Int): Int
+
+    /** true enquanto os samples de um instrumento estão sendo trazidos do armazenamento. */
+    external fun nativeIsLoading(id: Int): Boolean
     external fun nativeRemoveTrack(id: Int)
     external fun nativePresetCount(id: Int): Int
     external fun nativePresetName(id: Int, index: Int): String

@@ -8,6 +8,7 @@
 
 #include <jni.h>
 #include <android/log.h>
+#include <unistd.h>
 #include <oboe/Oboe.h>
 
 #include <algorithm>
@@ -19,7 +20,8 @@
 #include <vector>
 
 #define TSF_IMPLEMENTATION
-#include "tsf.h"
+#include "tsf.h"      // versão do AEVO: samples de 16 bits mapeados do arquivo (ver sf2_loader.h)
+#include "sf2_loader.h"
 
 #define LOG_TAG "AEVO"
 #define LOGI(...) __android_log_print(ANDROID_LOG_INFO, LOG_TAG, __VA_ARGS__)
@@ -76,6 +78,8 @@ private:
 struct Track {
     tsf* synth = nullptr;
     float volume = 0.8f;
+    std::shared_ptr<sf2::Mapping> mapping;               // samples mapeados do arquivo (pode ser nulo)
+    std::shared_ptr<std::atomic<int>> pending;           // cargas de preset em andamento
 };
 
 std::mutex gMutex;  // protege gTracks (adicionar/remover); o callback usa try_lock
@@ -247,24 +251,38 @@ Java_com_natan_aevo_Engine_nativeAudioInfo(JNIEnv* env, jobject) {
     return env->NewStringUTF(gEngine->info().c_str());
 }
 
-// Retorna o id da faixa, ou -1 se o SF2 não puder ser carregado.
+// Carrega um SF2 pelo descritor de arquivo (o motor fecha o fd).
+// Retorna o id da faixa; -1 = SF2 inválido ou grande demais; -2 = o fd não permite leitura
+// aleatória (o chamador deve copiar o arquivo para o cache e tentar de novo).
 JNIEXPORT jint JNICALL
-Java_com_natan_aevo_Engine_nativeAddTrack(JNIEnv* env, jobject, jbyteArray data) {
-    jsize len = env->GetArrayLength(data);
-    std::vector<jbyte> bytes(static_cast<size_t>(len));
-    env->GetByteArrayRegion(data, 0, len, bytes.data());
+Java_com_natan_aevo_Engine_nativeAddTrackFd(JNIEnv*, jobject, jint fd) {
+    sf2::Loaded loaded = sf2::load(fd);
+    close(fd);
+    if (loaded.status != sf2::kOk) return loaded.status;
 
-    tsf* synth = tsf_load_memory(bytes.data(), static_cast<int>(len));
-    if (synth == nullptr) return -1;
-
+    tsf* synth = loaded.synth;
     tsf_set_max_voices(synth, kMaxVoices);
     tsf_channel_set_presetindex(synth, kChannel, 0);  // cria o canal 0
 
-    std::lock_guard<std::mutex> lock(gMutex);
-    tsf_set_output(synth, TSF_STEREO_INTERLEAVED, gSampleRate.load(), 0.0f);
-    tsf_set_volume(synth, 0.8f);
-    int id = gNextId++;
-    gTracks[id] = Track{synth, 0.8f};
+    Track track;
+    track.synth = synth;
+    track.mapping = loaded.mapping;
+    track.pending = std::make_shared<std::atomic<int>>(0);
+
+    int id;
+    {
+        std::lock_guard<std::mutex> lock(gMutex);
+        tsf_set_output(synth, TSF_STEREO_INTERLEAVED, gSampleRate.load(), 0.0f);
+        tsf_set_volume(synth, track.volume);
+        id = gNextId++;
+        gTracks[id] = track;
+    }
+
+    // Traz para a memória só os samples do primeiro preset, em segundo plano.
+    if (track.mapping) {
+        auto ranges = sf2::presetRanges(synth, 0, track.mapping->sampleCount);
+        sf2::warmAsync(track.mapping, std::move(ranges), track.pending, [] {});
+    }
     return id;
 }
 
@@ -299,9 +317,35 @@ Java_com_natan_aevo_Engine_nativePresetName(JNIEnv* env, jobject, jint id, jint 
     return env->NewStringUTF(name.c_str());
 }
 
+// Troca o preset. Se os samples vêm do arquivo, primeiro os traz para a memória em segundo plano
+// e só então troca (o som antigo continua até lá).
 JNIEXPORT void JNICALL
 Java_com_natan_aevo_Engine_nativeSetPreset(JNIEnv*, jobject, jint id, jint index) {
-    gEvents.push({EventType::SetPreset, id, index, 0, 0.0f});
+    std::shared_ptr<sf2::Mapping> mapping;
+    std::shared_ptr<std::atomic<int>> pending;
+    std::vector<sf2::Range> ranges;
+    {
+        std::lock_guard<std::mutex> lock(gMutex);
+        auto it = gTracks.find(id);
+        if (it == gTracks.end()) return;
+        mapping = it->second.mapping;
+        pending = it->second.pending;
+        if (mapping) ranges = sf2::presetRanges(it->second.synth, index, mapping->sampleCount);
+    }
+    if (!mapping) {
+        gEvents.push({EventType::SetPreset, id, index, 0, 0.0f});
+        return;
+    }
+    sf2::warmAsync(mapping, std::move(ranges), pending, [id, index] {
+        gEvents.push({EventType::SetPreset, id, index, 0, 0.0f});
+    });
+}
+
+JNIEXPORT jboolean JNICALL
+Java_com_natan_aevo_Engine_nativeIsLoading(JNIEnv*, jobject, jint id) {
+    std::lock_guard<std::mutex> lock(gMutex);
+    auto it = gTracks.find(id);
+    return (it != gTracks.end() && it->second.pending && it->second.pending->load() > 0) ? JNI_TRUE : JNI_FALSE;
 }
 
 JNIEXPORT void JNICALL

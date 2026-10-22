@@ -5,6 +5,9 @@ import android.graphics.Typeface
 import android.graphics.drawable.GradientDrawable
 import android.net.Uri
 import android.os.Bundle
+import android.os.Handler
+import android.os.Looper
+import android.os.ParcelFileDescriptor
 import android.view.Gravity
 import android.view.MotionEvent
 import android.view.View
@@ -17,7 +20,9 @@ import android.widget.Toast
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.appcompat.app.AlertDialog
 import androidx.appcompat.app.AppCompatActivity
+import java.io.File
 import java.util.concurrent.CopyOnWriteArrayList
+import kotlin.concurrent.thread
 
 /**
  * AEVO 0.3 beta.
@@ -34,6 +39,7 @@ class MainActivity : AppCompatActivity(), MidiListener {
         @Volatile var midiInput = ANY   // NONE, ANY ou o id de um dispositivo
         var presetIndex = 0
         var volume = 0.8f
+        var loading = false   // samples do instrumento sendo trazidos do armazenamento
     }
 
     private val tracks = CopyOnWriteArrayList<TrackState>()
@@ -47,23 +53,73 @@ class MainActivity : AppCompatActivity(), MidiListener {
     private lateinit var midiInfo: TextView
     private lateinit var midi: MidiInput
 
+    private val main = Handler(Looper.getMainLooper())
+
     private val pickSf2 = registerForActivityResult(ActivityResultContracts.OpenDocument()) { uri: Uri? ->
         if (uri == null) return@registerForActivityResult
-        val bytes = contentResolver.openInputStream(uri)?.use { it.readBytes() }
-        if (bytes == null) {
-            toast("Não consegui ler o arquivo")
-            return@registerForActivityResult
-        }
-        val id = Engine.nativeAddTrack(bytes)
-        if (id < 0) {
-            toast("Esse arquivo não é um SF2 válido")
-            return@registerForActivityResult
-        }
         val name = uri.lastPathSegment?.substringAfterLast('/')?.removeSuffix(".sf2")
             ?: "Faixa ${tracks.size + 1}"
-        tracks.add(TrackState(id, name, Engine.nativePresetCount(id)))
-        if (selectedTrack < 0) selectedTrack = id
-        refreshTracks()
+        toast("Abrindo $name…")
+        // Fora da thread principal: a cópia de segurança (arquivos que não permitem leitura
+        // aleatória) pode demorar.
+        thread {
+            val id = try {
+                loadSf2(uri)
+            } catch (e: Exception) {
+                -1
+            }
+            runOnUiThread {
+                if (id < 0) {
+                    toast("Não consegui abrir este SF2 (inválido ou grande demais para a memória)")
+                } else {
+                    val track = TrackState(id, name, Engine.nativePresetCount(id))
+                    tracks.add(track)
+                    if (selectedTrack < 0) selectedTrack = id
+                    watchLoading(track)
+                    refreshTracks()
+                }
+            }
+        }
+    }
+
+    /**
+     * Abre o SF2 pelo descritor de arquivo: o motor lê direto do arquivo, sem carregá-lo na memória
+     * do Java (que estourava com SF2 grandes). Se o arquivo não permitir leitura aleatória
+     * (alguns provedores de nuvem), copia para o cache e tenta de novo.
+     */
+    private fun loadSf2(uri: Uri): Int {
+        val pfd = contentResolver.openFileDescriptor(uri, "r") ?: return -1
+        var id = Engine.nativeAddTrackFd(pfd.detachFd())
+        if (id == -2) {
+            val temp = File(cacheDir, "importado.sf2")
+            try {
+                contentResolver.openInputStream(uri)?.use { input ->
+                    temp.outputStream().use { output -> input.copyTo(output, 1 shl 20) }
+                }
+                val copy = ParcelFileDescriptor.open(temp, ParcelFileDescriptor.MODE_READ_ONLY)
+                id = Engine.nativeAddTrackFd(copy.detachFd())
+            } finally {
+                temp.delete()  // o motor mantém o arquivo aberto mapeado; o sistema só libera ao fechar
+            }
+        }
+        return id
+    }
+
+    /** Enquanto o instrumento carrega, o cartão da faixa mostra "carregando…". */
+    private fun watchLoading(t: TrackState) {
+        t.loading = true
+        val poll = object : Runnable {
+            override fun run() {
+                if (!tracks.contains(t)) return
+                if (Engine.nativeIsLoading(t.id)) {
+                    main.postDelayed(this, 250)
+                } else {
+                    t.loading = false
+                    refreshTracks()
+                }
+            }
+        }
+        main.postDelayed(poll, 100)
     }
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -184,6 +240,7 @@ class MainActivity : AppCompatActivity(), MidiListener {
             .setSingleChoiceItems(names, t.presetIndex) { dialog, which ->
                 t.presetIndex = which
                 Engine.nativeSetPreset(t.id, which)
+                watchLoading(t)
                 dialog.dismiss()
                 refreshTracks()
             }
@@ -277,7 +334,7 @@ class MainActivity : AppCompatActivity(), MidiListener {
 
         val presetName = if (t.presetCount > 0) Engine.nativePresetName(t.id, t.presetIndex) else "—"
         card.addView(Button(this).apply {
-            text = "Instrumento: $presetName"
+            text = "Instrumento: $presetName" + if (t.loading) "  (carregando…)" else ""
             transformationMethod = null
             setOnClickListener { showPresetDialog(t) }
         })
